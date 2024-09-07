@@ -1,0 +1,68 @@
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy.signal import find_peaks
+from scipy.interpolate import interp1d
+
+# caraterísticas da estrutura bidimensional
+largura = 596e-3  # m
+n_pontos = 9
+
+# função para ler os dados de FRF de um arquivo
+def ler_frf(arquivo):
+    with open(arquivo, 'r') as f:
+        linhas = f.readlines()
+    
+    freq_resposta = []
+    valores_reais = []
+    valores_imaginarios = []
+    for linha in linhas[1:]:  # saltar a primeira linha (cabeçalho)
+        partes = linha.strip().split(',')
+        freq = float(partes[0])
+        real = float(partes[1])
+        imag = float(partes[2])
+        freq_resposta.append(freq)
+        valores_reais.append(real)
+        valores_imaginarios.append(imag)
+    
+    return np.array(freq_resposta), np.array(valores_reais), np.array(valores_imaginarios)
+
+# frequência alvo para a extração do imaginário
+freq_modulo = [92, 250.5, 490.5] # Hz
+
+# ler os arquivos da FRF
+for j in range(0, len(freq_modulo)):
+    # armazenar os valores imaginários da frequência alvo
+    modulo_vibracao = []
+    
+    for i in range(1, n_pontos + 1):
+        arquivo = f'frf_{i}_1.txt'
+        freq_resposta, val_reais, val_complexos = ler_frf(arquivo)
+        
+        # encontrar o índice da frequência
+        ind_alvo = np.argmin(np.abs(freq_resposta - freq_modulo[j]))
+        
+        # obter o imaginário correspondente
+        imaginario_freq = val_complexos[ind_alvo]
+        real_freq = val_reais[ind_alvo]
+        modulo_vibracao.append(imaginario_freq)
+    
+    # plot do módulo de vibração
+    posicao = np.arange(0, 1.1*largura, largura/(n_pontos-1))
+    
+    # criação da função de interpolação cúbica
+    interp_func = interp1d(posicao, modulo_vibracao, kind='cubic')
+    
+    # criação de um array de posições para a interpolação
+    posicao_fina = np.linspace(posicao.min(), posicao.max(), num=500)
+    modulo_vibracao_interpolado = interp_func(posicao_fina)
+    
+    # plot dos dados originais e dos dados interpolados
+    plt.figure(figsize=(10, 6))
+    plt.plot(posicao, modulo_vibracao, 'o', label=f'Valor Imaginário a {freq_modulo[j]} Hz')
+    plt.plot(posicao_fina, modulo_vibracao_interpolado, '-', label='Modo de Vibração',color='blue')
+    # plt.title('')
+    plt.xlabel('Posição')
+    plt.ylabel('Imaginário')
+    plt.legend()
+    plt.grid(True)
+    plt.show()
