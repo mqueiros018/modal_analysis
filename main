@@ -1,0 +1,18 @@
+import aquisicao
+import analise
+
+# definir as sub-rotinas
+def final():
+    print("Executar  o Programa de Aquisição e Processamento")
+
+def analise():
+    print("Executar  o Programa de An+alise")
+
+# função principal para as sub-rotinas
+def main():
+    aquisicao()  # executa o programa de aquisição e processamento
+    analise()  # executa o programa de análise
+
+# função principal
+if __name__ == "__main__":
+    main()
