@@ -1,0 +1,331 @@
+import nidaqmx
+import time
+import numpy as np
+import matplotlib.pyplot as plt
+from nidaqmx import constants
+from nidaqmx.constants import TerminalConfiguration, Edge, AcquisitionType, SampleTimingType, ForceUnits, AccelUnits, AccelSensitivityUnits
+
+# parametros da placa NI-USB 4431
+
+# parametros da placa NI-USB 4432
+sens_martelo = 11.2e-3 # V/N
+sens_acel = 9.92e-3 * 9.81 # V/G
+
+frfs = []
+incremento = 0
+
+time_out = 10.0 # time out
+num_pre_samples = 6  # número de pré-samples
+freq_analise = 1600 # Hz
+freq_aquisicao = 1.5 * freq_analise * 10  #sample/s  # Na 4432 a Freq máxima de aquisição é 102.4 kHz. A minima é 1 kHz
+N_leituras = int(freq_aquisicao * time_out) # numero de leituras a realizar
+threshold_impacto = 0.1
+amostragem = 2
+amostras = int(amostragem*freq_aquisicao) # número de amostras a ler depois do impacto
+valores_de_tempo_frf = np.arange(0, amostragem, amostragem/amostras)
+freq_max = freq_analise
+dt = 1/(freq_aquisicao)
+indice_freq = int(freq_max/2)*amostragem + 1
+tempo = np.arange(0, N_leituras/freq_aquisicao, 1/freq_aquisicao) # variavel de tempo total de aquisição
+
+# definir um nome para  ficheiro de resultados que incorpore a data
+named_tuple = time.localtime() # get struct_time
+time_string = time.strftime("%Y_%m_%d_%H_%M_%S", named_tuple)
+nome_ficheiro_resultados = 'Resultados_p_NI_USB_4432_' + time_string + '.txt'   # Titulo criado e indexado ao tempo (nome unico)
+
+# Input do número de leituras desejadas
+while True:
+    try:
+        n_leituras = int(input("Insira o número de leituras desejadas: "))
+        if n_leituras <= 0:
+            print("O número de leituras deve ser maior que zero.")
+        else:
+            break
+    except ValueError:
+        print("Por favor, insira um número inteiro válido.")
+
+while len(frfs) < n_leituras:
+    incremento += 1
+
+    # ler os 2 primeiros canais da placa
+    def readdaq(N_pedido, freq_aquisicao_ped):
+        Analog_read_task = nidaqmx.task.Task('Analog_read_task')   # Iniciar o DAQ device (Tarefa)  
+        # configuraçao canal 0
+        ai_channel = Analog_read_task.ai_channels.add_ai_force_iepe_chan(
+            'Dev1/ai0', name_to_assign_to_channel='force',
+        terminal_config=TerminalConfiguration.DEFAULT,
+        units=constants.ForceUnits.NEWTONS, 
+        min_val=-10,
+        max_val=+10,
+        sensitivity=1000,
+        sensitivity_units=constants.ForceIEPESensorSensitivityUnits.MILLIVOLTS_PER_NEWTON,
+        current_excit_val=2.100000e-3,
+        custom_scale_name="")
+    
+        # configuraçao canal 1
+        ai_channel_1 = Analog_read_task.ai_channels.add_ai_accel_chan(
+            'Dev1/ai1', name_to_assign_to_channel='acel',
+        units=constants.AccelUnits.G,sensitivity= 1000,
+        sensitivity_units=constants.AccelSensitivityUnits.MILLIVOLTS_PER_G)
+        ai_channel_1.ai_accel_db_ref=1
+        ai_channel_1.ai_coupling=constants.Coupling.AC
+        ai_channel_1.ai_excit_voltage_or_current=constants.ExcitationVoltageOrCurrent.USE_CURRENT
+        ai_channel_1.ai_excit_src=constants.ExcitationSource.INTERNAL
+        ai_channel_1.ai_excit_val=0.0021
+        ai_channel_1.ai_max=+10
+        ai_channel_1.ai_min=-10
+        ai_channel_1.ai_term_cfg=constants.TerminalConfiguration.PSEUDO_DIFF
+        ai_channel_1.ai_accel_units.METERS_PER_SECOND_SQUARED
+        
+        # definir taxa
+        Analog_read_task.timing.cfg_samp_clk_timing(rate = freq_aquisicao_ped, sample_mode=constants.AcquisitionType.CONTINUOUS,
+                                            samps_per_chan = N_pedido)
+        Analog_read_task.sample_clk_active_edge=constants.Edge.RISING
+        Analog_read_task.samp_timing_type=constants.SampleTimingType.SAMPLE_CLOCK
+        
+        Analog_read_task.start()
+    
+        valores_lidos_aq = Analog_read_task.read(number_of_samples_per_channel=int(N_pedido))
+        Analog_read_task.stop()
+        
+        Analog_read_task.close() # Encerrar a tarefa
+    
+        return valores_lidos_aq # devolve os valores obtidas através da placa de aquisição
+    
+    i_impacto=0
+    def detetar_impacto(data, threshold):
+        # usar numpy.where para encontrar os índices onde o valor excede o threshold
+        indices = np.where(data > threshold)[0]
+        # print(indices)
+        
+        # verificar se algum índice foi encontrado e retornar o primeiro, caso contrário retornar -1
+        if indices.size > 0:
+            return indices[0]  # devolve o primeiro índice encontrado
+        else:
+            return -1  # devolde o valor -1 se nenhum valor exceder o threshold
+    
+    def processar_dados(valores_lidos, threshold_impacto, num_pre_samples):
+        i_impacto = detetar_impacto(valores_lidos[0], threshold_impacto)
+        if i_impacto != -1:
+            start_index = max(i_impacto - num_pre_samples, 0)
+            valores_lidos = valores_lidos[:, start_index:]
+            # print(f"Start index: {start_index}")
+        else:
+            print("Impacto não detetado")
+        return valores_lidos, i_impacto
+    
+    # Plot das figuras
+    resol_dpi = 300
+    
+    # leitura dos dados
+    valores_lidos_aq = np.array(readdaq(N_leituras, freq_aquisicao)) # leitura dos dados através da placa de aquisição
+    i_impacto = detetar_impacto(valores_lidos_aq[0], threshold_impacto) # determinaçao do instante em que acontece o impacto do martelo
+    t = tempo[i_impacto]
+    
+    # reformulaçao dos valores de tempo e da placa de acordo com o indice de impacto
+    valores_de_tempo = tempo[i_impacto:]-t
+    valores_lidos = valores_lidos_aq[:, i_impacto:]
+    
+    for i, valores in enumerate(valores_lidos):
+    
+        plot=plt.figure(num=None, figsize=(6, 4), dpi=resol_dpi)
+        ax = plot.gca()
+        plt.plot(tempo, valores_lidos_aq[i],'-r' , label=f'Canal {i}')
+        plt.title(f'Canal {i} - Valores Lidos')
+        plt.xlabel('Tempo [s]')
+        plt.ylabel('Tensão [V]')
+        plt.legend()
+        plt.grid(True)
+        plt.show()
+    
+    # processamento de dados
+    # valores_lidos_processados = processar_dados(valores_lidos, threshold_impacto, num_pre_samples)
+    valores_lidos_processados, i_impacto = processar_dados(valores_lidos_aq, threshold_impacto, num_pre_samples)
+    
+    if i_impacto != -1:
+        sinal_forca = valores_lidos_processados[0,:amostras]/sens_martelo
+        sinal_resposta = valores_lidos_processados[1,:amostras] /sens_acel * 9.81
+        sinal_resposta = (valores_lidos_processados[1, :amostras]) / sens_acel * 9.81
+        
+    else:
+        print("Impacto não detetado")
+    
+    # ponderação resposta
+    d = 30 # frequencia de declive Hz
+    ponderacao = np.ones(amostras)
+    ponderacao[int(0.9 * amostras):] = 1 * np.exp(-d * valores_de_tempo_frf[:int(0.1 * amostras)])
+    ponderacao[-10:] = 0
+    
+    # ponderação forca
+    threshold_estabilizacao = 0.1
+    
+    # encontrar o índice de estabilização
+    indice = None
+    for i in range(amostras):
+        i = i + num_pre_samples
+        if abs(sinal_forca[i]) < threshold_estabilizacao:
+            indice = i+1
+            break
+    
+    # verificar se encontramos um índice de estabilização
+    if indice is not None:
+        
+        # criar ponderacao_forca e definir valores após o índice de estabilização como zero
+        ponderacao_forca = np.ones(amostras)
+        ponderacao_forca[0] = 0
+        ponderacao_forca[indice:] = 0
+    else:
+        print("Nenhum índice de estabilização encontrado.")
+    
+    # função de ponderação
+    def fun_ponderacao(sinal, funcao_ponderacao):
+        sinal_ponderado = funcao_ponderacao * sinal
+        return sinal_ponderado
+        
+    sinal_resposta_ponderado = fun_ponderacao(sinal_resposta, ponderacao)
+    sinal_forca_ponderado = sinal_forca * ponderacao_forca
+        
+    # plot sinal força
+    plot=plt.figure(num=None, figsize=(6, 4), dpi=resol_dpi)
+    ax = plot.gca()
+    plt.plot(valores_de_tempo_frf,sinal_forca)
+    ax = plot.gca()
+    ax.axes.set_xlim([0, 0.015])
+    plt.title('Sinal Não Ponderado - Força')
+    plt.xlabel('Tempo [s]')
+    plt.ylabel('Força [N]')
+    # plt.legend()
+    plt.grid(True)
+    plt.show() 
+    
+    # plot sinal força ponderado
+    plot=plt.figure(num=None, figsize=(6, 4), dpi=resol_dpi)
+    ax = plot.gca()
+    plt.plot(valores_de_tempo_frf,sinal_forca_ponderado)
+    ax = plot.gca()
+    ax.axes.set_xlim([0, 0.015])
+    plt.title('Sinal Ponderado - Força')
+    plt.xlabel('Tempo [s]')
+    plt.ylabel('Força [N]')
+    # plt.legend()
+    plt.grid(True)
+    plt.show()
+    
+    # plot sinal resposta ponderado
+    plot=plt.figure(num=None, figsize=(6, 4), dpi=resol_dpi)
+    ax = plot.gca()
+    plt.plot(valores_de_tempo_frf,sinal_resposta_ponderado)
+    plt.title('Sinal Ponderado - Resposta')
+    plt.xlabel('Tempo [s]')
+    plt.ylabel('Aceleração [m/s^2]')
+    # plt.legend()
+    plt.grid(True)
+    plt.show()
+    
+    # transformada de Fourier
+    def calcular_fft(sinal_ponderado, amostras, freq_max):
+        fourier = np.fft.fft(sinal_ponderado)
+        amplitude = np.abs(fourier)[:indice_freq + 1] ** 2
+        fase = np.angle(fourier)[:indice_freq + 1]
+        freq = np.arange(0,freq_max/2 + 1, 1/amostragem)
+        
+        return fourier, freq, amplitude, fase
+    
+    fourier_forca, freq_forca, amplitude_forca, fase_forca = calcular_fft(sinal_forca_ponderado, amostras, freq_max)
+    fourier_resposta, freq_resposta, amplitude_resposta, fase_resposta = calcular_fft(sinal_resposta_ponderado, amostras, freq_max)
+    
+    # cálculo dos autoespectros associados à força e resposta
+    auto_espetro_forca = fourier_forca * np.conj(fourier_forca)
+    auto_espetro_resposta = fourier_resposta * np.conj(fourier_resposta)
+    
+    # plot autoespectro da força
+    plot=plt.figure(num=None, figsize=(6, 4), dpi=resol_dpi)
+    ax = plot.gca()
+    plt.plot(freq_forca, 20 * np.log10(auto_espetro_forca[:indice_freq + 1] * 1e6))
+    plt.title('FFT - Força')
+    plt.ylabel('Amplitude [dB]')
+    plt.xlabel('Freq. [Hz]')
+    # plt.legend()
+    plt.grid(True)
+    plt.show()
+    
+    # plot amplitude da resposta
+    plot=plt.figure(num=None, figsize=(6, 4), dpi=resol_dpi)
+    ax = plot.gca()
+    plt.plot(freq_resposta, 20 * np.log10 (amplitude_resposta)) # plot da amplitude em decibel [dB]
+    plt.title('FFT - Resposta')
+    plt.xlabel('Frequência [Hz]')
+    plt.ylabel('Amplitude')
+    # plt.legend()
+    plt.grid(True)
+    plt.show()
+    
+    # calcular FRF
+    frf_numerador = fourier_forca * np.conj(fourier_resposta)
+    frf_denominador = fourier_forca * np.conj(fourier_forca)
+    frf = frf_numerador / frf_denominador
+    
+    # calcular amplitude e fase da FRF
+    frf_amplitude = np.abs(frf)
+    frf_fase = np.angle(frf)
+    
+    frf_imag = np.imag(frf) # parte imaginária da FRF
+    frf_real = np.real(frf) # parte real da FRF
+    
+    # plot FRF
+    plot=plt.figure(num=None, figsize=(6, 4), dpi=resol_dpi)
+    ax = plot.gca()
+    plt.plot(freq_resposta, 20 * np.log10(frf_amplitude[:indice_freq + 1])) # plot da amplitude em decibel [dB]
+    plt.title('FRF')
+    plt.xlabel('Frequência [Hz]')
+    plt.ylabel('Amplitude')
+    # plt.legend()
+    plt.grid(True)
+    plt.show()
+    
+    # calcular a função de coerência
+    auto_espetro_resposta = fourier_resposta * np.conj(fourier_resposta) # GXX
+    auto_espetro_forca = fourier_forca * np.conj(fourier_forca) # GFF
+    
+    coerencia = (np.abs(frf_numerador))**2 / (auto_espetro_forca * auto_espetro_resposta)
+    coerencia_abs = np.abs(coerencia)
+    # vetor = (frf_numerador)**2
+    
+    # plot da função de coerência
+    plot=plt.figure(num=None, figsize=(6, 4), dpi=resol_dpi)
+    ax = plot.gca()
+    plt.plot(freq_resposta, coerencia_abs[:indice_freq + 1])
+    plt.title('Função de Coerência')
+    plt.xlabel('Frequência [Hz]')
+    plt.ylabel('Coerência')
+    # plt.legend()
+    plt.grid(True)
+    plt.show()
+
+    confirmar = input(f"Leitura {incremento} está correta? (s/n): ").strip().lower()
+    if confirmar == 's':
+        frfs.append(frf)
+        # reiniciar variáveis para próxima iteração
+        valores_lidos_aq = None
+        valores_lidos_processados = None
+        sinal_forca = None
+        sinal_resposta = None
+        print(f"Leitura {incremento} adicionada.")
+
+# calcular a média das FRFs
+if frfs:
+    frf_media = np.mean(frfs, axis=0)
+    
+    # Plot da média da FRF
+    plot=plt.figure(num=None, figsize=(6, 4), dpi=resol_dpi)
+    plt.plot(freq_resposta, 20 * np.log10(frf_media[:indice_freq + 1]))
+    plt.title('FRF Média')
+    plt.xlabel('Frequência [Hz]')
+    plt.ylabel('Amplitude')
+    plt.legend()
+    plt.grid(True)
+    plt.show()
+
+# guardar os dados
+dados = np.column_stack((np.abs(freq_resposta), np.real(frf_media[:indice_freq + 1]),np.imag(frf_media[:indice_freq + 1])))
+np.savetxt(nome_ficheiro_resultados, dados, delimiter=',', header='Frequência, FRF - parte real, FRF - parte imaginária', comments='')
