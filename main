@@ -6,7 +6,7 @@ def final():
     print("Executar  o Programa de Aquisição e Processamento")
 
 def analise():
-    print("Executar  o Programa de An+alise")
+    print("Executar  o Programa de Análise")
 
 # função principal para as sub-rotinas
 def main():
